@@ -189,15 +189,29 @@ class SubFactory:
 
     # -- workspace provisioning (also the STEP 7 reconfigure path) ----------
 
-    def provision(self, spec: SpawnSpec, *, sub_id: str, key: str, port: int) -> Path:
+    def provision(
+        self,
+        spec: SpawnSpec,
+        *,
+        sub_id: str,
+        key: str,
+        port: int,
+        workspace: Path | None = None,
+        agents_md: str | None = None,
+        soul_md: str | None = None,
+    ) -> Path:
         """Create/refresh the Sub workspace: skeleton, config, role prompts.
 
         Idempotent and **sessions-preserving**: only config.json / AGENTS.md /
         SOUL.md are (re)written; ``sessions/`` (the memory store, PoC-C) is left
-        intact. This is the path STEP 7 will reuse to change a Sub's role/config
+        intact. This is the path STEP 7 reuses to change a Sub's role/config
         while keeping its memory.
+
+        ``workspace`` pins an explicit directory (default ``~/.nbq-<role>``).
+        ``agents_md`` / ``soul_md`` override the rendered role prompt — used by
+        the role adjuster to apply Core-drafted, human-approved prompt text.
         """
-        ws = self.workspace_for(spec.role)
+        ws = Path(workspace) if workspace is not None else self.workspace_for(spec.role)
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "sessions").mkdir(exist_ok=True)   # PoC-C: ensure sessions/ lands
         (ws / "memory").mkdir(exist_ok=True)
@@ -215,8 +229,10 @@ class SubFactory:
         (ws / "config.json").write_text(
             json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
-        (ws / "AGENTS.md").write_text(self._render_agents_md(spec, sub_id), encoding="utf-8")
-        (ws / "SOUL.md").write_text(self._render_soul_md(spec), encoding="utf-8")
+        agents = agents_md if agents_md is not None else self._render_agents_md(spec, sub_id)
+        soul = soul_md if soul_md is not None else self._render_soul_md(spec)
+        (ws / "AGENTS.md").write_text(agents, encoding="utf-8")
+        (ws / "SOUL.md").write_text(soul, encoding="utf-8")
         return ws
 
     def _render_agents_md(self, spec: SpawnSpec, sub_id: str) -> str:
