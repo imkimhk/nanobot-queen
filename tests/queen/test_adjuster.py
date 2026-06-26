@@ -159,6 +159,39 @@ def test_rollback_restores_prior_capability_and_prompt(env):
 # --- isolation (domain switch) ---------------------------------------------
 
 
+def test_promote_to_core_before_isolation_survives(tmp_path):
+    from nanobot.queen.memory import CoreMemory
+
+    registry = SubRegistry(tmp_path / "subs.json")
+    factory = SubFactory(
+        registry, base_dir=tmp_path,
+        keystore_path=tmp_path / ".nbq-core" / "keys.json",
+        key_factory=lambda: "K-coder", launcher=lambda **k: 4242,
+        health_check=lambda port: True,
+    )
+    factory.spawn(SpawnSpec(role="coder", capability=["code.write", "code.review"]))
+    core_mem = CoreMemory(tmp_path)
+    adj = RoleAdjuster(factory, history_dir=tmp_path / ".nbq-core" / "history",
+                       stopper=lambda pid: None, core_memory=core_mem)
+
+    ws = factory.workspace_for("coder")
+    _seed_memory(ws, "important finding before wipe")
+
+    plan = adj.draft(AdjustmentDraft(
+        sub_id="coder", capability=["code.write"], isolate=True,
+        promote=[{"summary": "coder solved the auth refactor task", "kind": "task_result", "status": "ok"}],
+    ))
+    res = adj.apply(plan, approved=True)
+
+    assert res["promoted"] == 1
+    # sub sessions were wiped (isolated) ...
+    assert not (ws / "sessions" / "api_default.jsonl").exists()
+    # ... but the promoted memory survives in Core unified memory
+    promoted = core_mem.query(sub_id="coder")
+    assert len(promoted) == 1
+    assert "auth refactor" in promoted[0].summary
+
+
 def test_isolate_archives_sessions(env):
     mem = _seed_memory(env["ws"])
     plan = env["adjuster"].draft(AdjustmentDraft(

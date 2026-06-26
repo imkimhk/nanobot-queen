@@ -131,6 +131,9 @@ class AdjustmentDraft:
     prompt_version: str = "v2"
     role_prompt_text: str | None = None  # None => render safe default template
     isolate: bool = False                # True => archive sessions/ (memory reset)
+    # Items to promote to Core unified memory BEFORE isolation wipes sub memory.
+    # Each item: {"summary": str, "kind": str, "status": str, "task_id": str|None}.
+    promote: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -144,6 +147,7 @@ class AdjustmentPlan:
     isolate: bool
     prior_capability: list[str]
     prior_prompt_version: str
+    promote: list[dict] = field(default_factory=list)
 
 
 # --- adjuster --------------------------------------------------------------
@@ -157,9 +161,11 @@ class RoleAdjuster:
         history_dir: str | Path | None = None,
         stopper=None,
         clock=None,
+        core_memory=None,
     ):
         self.factory = factory
         self.registry = factory.registry
+        self.core_memory = core_memory
         self.history_dir = Path(history_dir) if history_dir is not None else (
             factory.base_dir / ".nbq-core" / "history"
         )
@@ -203,6 +209,7 @@ class RoleAdjuster:
             sub_id=draft.sub_id, workspace=rec.workspace, port=rec.port, spec=spec,
             agents_md=agents_md, soul_md=soul_md, isolate=draft.isolate,
             prior_capability=list(rec.capability), prior_prompt_version=rec.prompt_version,
+            promote=list(draft.promote),
         )
 
     # -- apply (requires explicit human approval) ---------------------------
@@ -231,18 +238,39 @@ class RoleAdjuster:
             self.stopper(rec.pid)
         self.registry.set_status(plan.sub_id, STATUS_STOPPED)
 
-        # 3) optional memory isolation
+        # 3) promote important memories to Core BEFORE isolation wipes sub memory
+        promoted = self._promote_before_isolate(plan)
+
+        # 4) optional memory isolation
         if plan.isolate:
             self._archive_sessions(ws)
 
-        # 4) reprovision in place (same workspace + port; sessions preserved)
+        # 5) reprovision in place (same workspace + port; sessions preserved)
         self.factory.provision(
             plan.spec, sub_id=plan.sub_id, key=key, port=plan.port,
             workspace=ws, agents_md=plan.agents_md, soul_md=plan.soul_md,
         )
 
-        # 5) restart + health + registry update
-        return self._relaunch_and_update(plan.sub_id, plan.spec, ws, plan.port, snapshot=snap)
+        # 6) restart + health + registry update
+        result = self._relaunch_and_update(plan.sub_id, plan.spec, ws, plan.port, snapshot=snap)
+        result["promoted"] = promoted
+        return result
+
+    def _promote_before_isolate(self, plan: AdjustmentPlan) -> int:
+        """Promote requested items to Core memory; returns count actually stored."""
+        if not plan.promote or self.core_memory is None:
+            return 0
+        n = 0
+        for item in plan.promote:
+            rec = self.core_memory.promote(
+                plan.sub_id, item.get("summary", ""),
+                kind=item.get("kind", "task_result"), status=item.get("status", "ok"),
+                task_id=item.get("task_id"), tags=tuple(item.get("tags", ())),
+                force=bool(item.get("force", False)),
+            )
+            if rec is not None:
+                n += 1
+        return n
 
     # -- rollback -----------------------------------------------------------
 
