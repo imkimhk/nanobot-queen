@@ -61,7 +61,7 @@ Sub1까지 1왕복으로 돌아오는지 확인한다.
 > ChatGPT Plus/Pro 계정으로 브라우저 OAuth가 열린다.
 
 ```bash
-cd /Users/imkimhk/Project/nanobot-queen
+cd ~/Project/nanobot-queen
 source .venv/bin/activate
 nanobot provider login openai-codex
 ```
@@ -90,7 +90,7 @@ nanobot provider logout openai-codex
 
 **터미널 A — Core:**
 ```bash
-/Users/imkimhk/Project/nanobot-queen/docs/poc/run-core.sh
+~/Project/nanobot-queen/docs/poc/run-core.sh
 ```
 기대 출력(요약):
 ```
@@ -101,7 +101,7 @@ nanobot provider logout openai-codex
 
 **터미널 B — Sub1:**
 ```bash
-/Users/imkimhk/Project/nanobot-queen/docs/poc/run-sub1.sh
+~/Project/nanobot-queen/docs/poc/run-sub1.sh
 ```
 기대 출력(요약):
 ```
@@ -144,7 +144,7 @@ curl -s http://127.0.0.1:8901/v1/chat/completions \
 
 또는 nanobot CLI로 직접:
 ```bash
-cd /Users/imkimhk/Project/nanobot-queen
+cd ~/Project/nanobot-queen
 source .venv/bin/activate
 # Sub1 인스턴스의 에이전트로 1건 질의 (serve 없이도 Sub1 config로 Core를 호출)
 nanobot agent -m "PoC-A 1왕복 테스트, 한 문장으로 자기소개." \
