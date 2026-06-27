@@ -392,6 +392,129 @@ async def handle_health(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# User -> Sub chat (STEP 10): routing wired to the orchestrator + passthrough
+# ---------------------------------------------------------------------------
+
+
+def load_user_keys() -> dict[str, str]:
+    """psk -> user_id map from ``QUEEN_GATEWAY_USER_KEYS`` (``user_id:psk`` pairs)."""
+    keys: dict[str, str] = {}
+    for pair in os.environ.get("QUEEN_GATEWAY_USER_KEYS", "").split(","):
+        pair = pair.strip()
+        if pair and ":" in pair:
+            uid, psk = pair.split(":", 1)
+            if uid.strip() and psk.strip():
+                keys[psk.strip()] = uid.strip()
+    return keys
+
+
+def _authenticate_user(request: web.Request) -> tuple[str | None, web.Response | None]:
+    presented = _extract_bearer(request)
+    user_keys: dict[str, str] = request.app["user_keys"]
+    if not presented or presented not in user_keys:
+        return None, _error_json(401, "Invalid or missing user key", "authentication_error")
+    return user_keys[presented], None
+
+
+def make_codex_classifier(provider, model: str):
+    """Core LLM router: pick which Sub(s) handle an ambiguous request."""
+    async def _classify(text: str, subs: list):
+        catalog = "\n".join(f"- {s.id}: {', '.join(s.capability)}" for s in subs)
+        prompt = (
+            "너는 라우터다. 아래 가용 Sub 중 사용자 요청을 처리할 sub_id만 쉼표로 답하라. "
+            "맞는 Sub가 없으면 정확히 'none'.\n\n"
+            f"가용 Sub:\n{catalog}\n\n사용자 요청: {text}\n\nsub_id(쉼표) 또는 none:"
+        )
+        r = await provider.chat(messages=[{"role": "user", "content": prompt}], model=model)
+        ans = (r.content or "").strip().lower()
+        usage = r.usage or {}
+        if "none" in ans:
+            return [], usage
+        ids = [s.id for s in subs if s.id.lower() in ans]
+        return ids, usage
+    return _classify
+
+
+def make_codex_integrator(provider, model: str):
+    async def _integrate(text: str, results: list):
+        joined = "\n\n".join(f"[{r.sub_id}] {r.content}" for r in results)
+        prompt = (
+            f"사용자 요청: {text}\n\n여러 전문가의 답변:\n{joined}\n\n"
+            "이를 하나의 일관된 응답으로 통합하라."
+        )
+        r = await provider.chat(messages=[{"role": "user", "content": prompt}], model=model)
+        return (r.content or ""), (r.usage or {})
+    return _integrate
+
+
+def make_codex_answerer(provider, model: str):
+    async def _answer(text: str):
+        r = await provider.chat(messages=[{"role": "user", "content": text}], model=model)
+        return (r.content or ""), (r.usage or {})
+    return _answer
+
+
+async def handle_queen_chat(request: web.Request) -> web.Response:
+    user_id, err = _authenticate_user(request)
+    if err is not None:
+        return err
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error_json(400, "Invalid JSON body")
+    text = body.get("message")
+    if not text and isinstance(body.get("messages"), list) and body["messages"]:
+        text = body["messages"][-1].get("content", "")
+    if not text:
+        return _error_json(400, "'message' is required")
+    session_id = body.get("session_id")
+
+    from nanobot.queen.chat import QueenChat, SubForwarder
+    from nanobot.queen.registry import SubRegistry
+
+    registry = SubRegistry(request.app["registry_path"])
+    forwarder = SubForwarder(registry, model=request.app["model"])
+
+    async def sub_call(sub_id: str, task_id: str, msg: str):
+        return await forwarder.forward(sub_id, msg, session_id=session_id, task_id=task_id)
+
+    chat = QueenChat(
+        registry, sub_call,
+        classify=request.app["classify"],
+        integrate=request.app["integrate"],
+        core_answer=request.app["core_answer"],
+    )
+    res = await chat.handle(text)
+
+    _log_usage({
+        "sub_id": "queen", "user": user_id, "status": "ok",
+        "routing": res.routing, "responder": res.responder, "multi": res.multi,
+        "prompt_tokens": res.sub_usage.get("prompt_tokens", 0)
+        + res.routing_usage.get("prompt_tokens", 0),
+        "completion_tokens": res.sub_usage.get("completion_tokens", 0)
+        + res.routing_usage.get("completion_tokens", 0),
+        "total_tokens": res.sub_usage.get("total_tokens", 0)
+        + res.routing_usage.get("total_tokens", 0),
+        "routing_tokens": res.routing_usage.get("total_tokens", 0),
+        "latency_ms": res.latency_ms,
+    })
+    return web.json_response(
+        {
+            "content": res.content,
+            "responder": res.responder,
+            "routing": res.routing,
+            "multi": res.multi,
+            "task_id": res.task_id,
+            "sub_usage": res.sub_usage,
+            "routing_usage": res.routing_usage,
+            "latency_ms": res.latency_ms,
+        },
+        headers={"X-Responder-Sub-Id": ",".join(res.responder)},
+    )
+
+
+# ---------------------------------------------------------------------------
 # App / entrypoint
 # ---------------------------------------------------------------------------
 
@@ -402,6 +525,8 @@ def create_app(
     provider: Any = None,
     keys: dict[str, str] | None = None,
     keys_file: str | None = None,
+    registry_path: str | None = None,
+    user_keys: dict[str, str] | None = None,
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     max_429_retries: int = DEFAULT_MAX_429_RETRIES,
     backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
@@ -428,9 +553,17 @@ def create_app(
     app["max_429_retries"] = max_429_retries
     app["backoff_base_s"] = backoff_base_s
     app["sleep"] = sleep if sleep is not None else _asyncio.sleep
+    # User->Sub routing wiring (STEP 10). registry_path defaults to ~/.nbq-core/subs.json.
+    app["registry_path"] = registry_path
+    app["user_keys"] = user_keys if user_keys is not None else load_user_keys()
+    prov = app["provider"]
+    app["classify"] = make_codex_classifier(prov, model)
+    app["integrate"] = make_codex_integrator(prov, model)
+    app["core_answer"] = make_codex_answerer(prov, model)
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/health", handle_health)
+    app.router.add_post("/queen/chat", handle_queen_chat)
     return app
 
 
