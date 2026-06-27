@@ -50,3 +50,44 @@ def test_empty_or_missing_file(tmp_path):
     s = summarize_usage(tmp_path / "nope.jsonl")
     assert s.total_calls == 0
     assert s.fixed_cost_estimate()["avg_prompt_tokens_per_call"] == 0.0
+
+
+# --- operational metrics ---------------------------------------------------
+
+import time as _time  # noqa: E402
+
+from nanobot.queen.usage import analyze_operations  # noqa: E402
+
+
+def test_operations_metrics(tmp_path):
+    log = tmp_path / "usage.jsonl"
+    now = _time.time()
+    _write(log, [
+        # User->Sub routing entries
+        {"ts": now, "sub_id": "queen", "status": "ok", "routing": "rule", "multi": False, "total_tokens": 7000, "routing_tokens": 0},
+        {"ts": now, "sub_id": "queen", "status": "ok", "routing": "rule", "multi": False, "total_tokens": 6000, "routing_tokens": 0},
+        {"ts": now, "sub_id": "queen", "status": "ok", "routing": "llm", "multi": True, "total_tokens": 18000, "routing_tokens": 4000},
+        # Sub->Codex entries + a rate-limit hit
+        {"ts": now, "sub_id": "research", "status": "ok", "total_tokens": 6000},
+        {"ts": now, "sub_id": "coder", "status": "concurrency_limited"},
+        {"ts": now, "sub_id": "coder", "status": "upstream_429"},
+    ])
+    s = analyze_operations(log)
+    date = _time.strftime("%Y-%m-%d", _time.localtime(now))
+    assert s.daily_tokens[date] == 7000 + 6000 + 18000 + 6000
+    assert s.daily_calls[date] == 6
+    assert s.routing_mix == {"rule": 2, "llm": 1}
+    assert s.routing_llm_ratio == round(1 / 3, 3)
+    assert s.task_mix == {"single": 2, "multi": 1}
+    assert s.multi_ratio == round(1 / 3, 3)
+    assert s.rate_limit_events == 2
+    assert s.rate_limit_by_kind == {"concurrency_limited": 1, "upstream_429": 1}
+    assert s.queen_calls == 3
+    assert s.escalated_calls == 1                 # only the llm/multi call paid routing tokens
+    assert s.paid_routing_ratio == round(1 / 3, 3)
+
+
+def test_operations_empty(tmp_path):
+    s = analyze_operations(tmp_path / "none.jsonl")
+    assert s.rate_limit_events == 0
+    assert s.routing_mix == {}

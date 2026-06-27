@@ -362,7 +362,12 @@ async def _handle_chat_completions_inner(request: web.Request, sub_id: str) -> w
         return _error_json(502, f"Upstream relay error: {e}", "upstream_error")
 
     usage = result.usage or {}
-    status = "ok" if result.finish_reason != "error" else "error"
+    if result.finish_reason != "error":
+        status = "ok"
+    elif result.error_status_code == 429:
+        status = "upstream_429"  # rate-limit reached (after backoff retries)
+    else:
+        status = "error"
     _log_usage({
         "sub_id": sub_id, "model": model, "requested_model": requested_model, "status": status,
         "prompt_tokens": usage.get("prompt_tokens", 0),
