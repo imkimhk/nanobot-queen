@@ -11,6 +11,7 @@ from nanobot.queen.factory import (
     SpawnError,
     SpawnSpec,
     SubFactory,
+    toolset_for,
 )
 from nanobot.queen.registry import STATUS_ERROR, STATUS_RUNNING, SubRegistry
 
@@ -95,6 +96,47 @@ def test_spawned_config_is_loadable_by_nanobot(env):
     preset = cfg.resolve_preset()
     assert preset.provider == "custom"
     assert cfg.providers.custom.api_base == "http://127.0.0.1:8900/v1"
+
+
+# --- tool pruning (STEP 9: shrink per-request prompt) ----------------------
+
+
+def test_toolset_for_derives_minimal_set():
+    ts = toolset_for(["research.web", "research.summary"])
+    assert "web_search" in ts and "read_file" in ts and "message" in ts
+    assert "exec" not in ts and "apply_patch" not in ts
+
+
+def test_provision_disables_unneeded_tool_groups(env):
+    res = env["factory"].spawn(_coder_spec())  # code.write/code.review
+    cfg = json.loads((Path(res.workspace) / "config.json").read_text())
+    tools = cfg["tools"]
+    assert tools["file"]["enable"] is True      # read/write/edit needed
+    assert tools["exec"]["enable"] is True       # code.write -> exec
+    assert tools["web"]["enable"] is False       # coder needs no web
+    assert tools["my"]["enable"] is False        # self-mod off
+    assert tools["cliApps"]["enable"] is False
+
+
+def test_research_disables_exec(tmp_path):
+    registry = SubRegistry(tmp_path / "subs.json")
+    f = SubFactory(registry, base_dir=tmp_path,
+                   keystore_path=tmp_path / ".nbq-core" / "keys.json",
+                   key_factory=lambda: "K", launcher=lambda **k: 1, health_check=lambda p: True)
+    res = f.spawn(SpawnSpec(role="research", capability=["research.web", "research.summary"]))
+    tools = json.loads((Path(res.workspace) / "config.json").read_text())["tools"]
+    assert tools["web"]["enable"] is True
+    assert tools["exec"]["enable"] is False
+
+
+def test_star_tools_keeps_all_groups(tmp_path):
+    registry = SubRegistry(tmp_path / "subs.json")
+    f = SubFactory(registry, base_dir=tmp_path,
+                   keystore_path=tmp_path / ".nbq-core" / "keys.json",
+                   key_factory=lambda: "K", launcher=lambda **k: 1, health_check=lambda p: True)
+    res = f.spawn(SpawnSpec(role="coder", capability=["code.write"], tools=["*"]))
+    cfg = json.loads((Path(res.workspace) / "config.json").read_text())
+    assert "tools" not in cfg  # upstream default: all tools registered
 
 
 # --- allowlist (safety) ----------------------------------------------------

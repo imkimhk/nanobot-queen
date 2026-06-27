@@ -75,6 +75,35 @@ class SpawnError(ValueError):
     """Raised when a spawn spec violates the allowlist or a Sub already runs."""
 
 
+# Minimal per-capability toolsets. Restricting a Sub's registered tools shrinks
+# the tool-schema portion of every request's prompt (~5k tokens with the full
+# 18-tool default) — the main lever once upstream prompt caching is unavailable
+# (STEP 9: ChatGPT-subscription Codex does not discount cached tokens).
+CAPABILITY_TOOLSETS: dict[str, list[str]] = {
+    "research.web": ["web_search", "web_fetch"],
+    "research.summary": ["read_file"],
+    "code.write": ["read_file", "write_file", "edit_file", "apply_patch", "exec"],
+    "code.review": ["read_file", "grep", "find_files"],
+    "writing.draft": ["read_file", "write_file"],
+    "writing.edit": ["read_file", "edit_file"],
+    "data.analyze": ["read_file", "exec", "grep"],
+    "data.viz": ["read_file", "write_file", "exec"],
+    "planning.decompose": ["read_file"],
+}
+# Tools every Sub keeps regardless of capability.
+BASE_TOOLS: list[str] = ["message"]
+
+
+def toolset_for(capabilities: list[str]) -> list[str]:
+    """Union of the minimal toolsets for the given capabilities, plus base tools."""
+    tools: list[str] = list(BASE_TOOLS)
+    for cap in capabilities:
+        for t in CAPABILITY_TOOLSETS.get(cap, []):
+            if t not in tools:
+                tools.append(t)
+    return tools
+
+
 @dataclass
 class SpawnSpec:
     role: str
@@ -83,6 +112,9 @@ class SpawnSpec:
     mode: str = MODE_ON_DEMAND
     port: int | None = None
     prompt_version: str = "v1"
+    # Explicit enabled-tools override. None => derive a minimal set from
+    # capabilities; ["*"] => keep all tools (the upstream nanobot default).
+    tools: list[str] | None = None
 
 
 @dataclass
@@ -226,6 +258,25 @@ class SubFactory:
             "agents": {"defaults": {"modelPreset": "coreproxy"}},
             "api": {"host": "127.0.0.1", "port": port, "timeout": 120},
         }
+        # Prune tool *groups* the capabilities don't need, to shrink the
+        # tool-schema portion of every request's prompt. Built-in tools are gated
+        # by per-group config flags (file/exec/web/my/cliApps), so we enable only
+        # the groups the derived toolset actually uses. ``tools=["*"]`` keeps the
+        # upstream default (all groups on).
+        enabled = spec.tools if spec.tools is not None else toolset_for(spec.capability)
+        if enabled != ["*"]:
+            ts = set(enabled)
+            file_tools = {"read_file", "write_file", "edit_file", "apply_patch",
+                          "grep", "find_files", "list_dir"}
+            exec_tools = {"exec", "write_stdin", "list_exec_sessions"}
+            web_tools = {"web_search", "web_fetch"}
+            config["tools"] = {
+                "file": {"enable": bool(ts & file_tools)},
+                "exec": {"enable": bool(ts & exec_tools)},
+                "web": {"enable": bool(ts & web_tools)},
+                "my": {"enable": False},
+                "cliApps": {"enable": False},
+            }
         (ws / "config.json").write_text(
             json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
