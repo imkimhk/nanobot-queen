@@ -120,11 +120,20 @@ class SubagentManager:
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
 
     def _subagent_tools_config(self) -> ToolsConfig:
-        """Build a ToolsConfig scoped for subagent use."""
+        """Build a ToolsConfig scoped for subagent use.
+
+        A subagent must not regain tool groups the parent disabled. Inherit ALL
+        tool-group switches from the parent (not only exec/web/file) so that, for
+        example, a parent with cli_apps disabled cannot spawn a subagent that
+        gets ``run_cli_app`` back via the ToolsConfig defaults.
+        """
         return ToolsConfig(
             exec=self.tools_config.exec,
             web=self.tools_config.web,
             file=self.tools_config.file,
+            cli_apps=self.tools_config.cli_apps,
+            my=self.tools_config.my,
+            image_generation=self.tools_config.image_generation,
             restrict_to_workspace=self.restrict_to_workspace,
         )
 
