@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# start-queen.sh — 여왕개미 시스템 전체 + WebUI를 한 번에 기동한다.
+#
+# 사용법:
+#   ./start-queen.sh            (또는  bash start-queen.sh)
+#
+# 띄우는 것:
+#   - 여왕개미 게이트웨이      http://127.0.0.1:8900   (/queen/chat, /v1)
+#   - Research Sub            127.0.0.1:8901
+#   - Coder Sub              127.0.0.1:8902
+#   - nanobot WebUI          http://127.0.0.1:8765   (로그인 없음)
+#
+# 전제: 이 저장소의 .venv 에 nanobot 설치됨 + 1회 Codex 로그인 완료
+#       (nanobot provider login openai-codex)
+#
+# 매 실행마다 기존 프로세스를 정리하고 새로 띄운다. 워크스페이스(~/.nbq-*)는
+# 보존되므로 이전 대화 기억은 이어진다.
+
+set -uo pipefail
+
+# ── 0. 환경 적용 (가장 먼저) ───────────────────────────────────────────────
+REPO="$(cd "$(dirname "$0")" && pwd)"
+cd "$REPO"
+# shellcheck disable=SC1091
+source "$REPO/.venv/bin/activate"
+
+WEBUI_DIR="$HOME/.nbq-webui-test"
+
+wait_health() {  # $1=url  $2=label
+  for _ in $(seq 1 40); do
+    if curl -s -m 2 "$1" >/dev/null 2>&1; then echo "  ✓ $2"; return 0; fi
+    sleep 0.5
+  done
+  echo "  ✗ $2 (health 응답 없음 — 로그 확인)"; return 1
+}
+
+echo "[0/4] 기존 프로세스 정리..."
+pkill -f "nanobot.queen.gateway" 2>/dev/null || true
+pkill -f "nanobot gateway"       2>/dev/null || true
+pkill -f "nanobot serve"         2>/dev/null || true
+sleep 1
+# 레지스트리/키 초기화 (워크스페이스·기억은 보존; Sub는 아래서 새로 띄움)
+rm -f "$HOME/.nbq-core/subs.json" "$HOME/.nbq-core/keys.json"
+
+echo "[1/4] 여왕개미 게이트웨이 (8900)..."
+QUEEN_GATEWAY_HOST="127.0.0.1" \
+QUEEN_GATEWAY_PORT="8900" \
+QUEEN_GATEWAY_MODEL="openai-codex/gpt-5.5" \
+QUEEN_GATEWAY_KEYS_FILE="$HOME/.nbq-core/keys.json" \
+QUEEN_GATEWAY_USER_KEYS="${QUEEN_GATEWAY_USER_KEYS:-me:user-key}" \
+QUEEN_GATEWAY_USAGE_LOG="$HOME/.nbq-core/usage.jsonl" \
+QUEEN_GATEWAY_MAX_CONCURRENCY="8" \
+  nohup python -m nanobot.queen.gateway > /tmp/nbq-gw.log 2>&1 &
+wait_health "http://127.0.0.1:8900/health" "gateway 8900"
+
+echo "[2/4] 전문 Sub 기동 (research 8901, coder 8902)..."
+python - <<'PY'
+from nanobot.queen.registry import SubRegistry
+from nanobot.queen.factory import SubFactory, SpawnSpec
+from nanobot.queen.lifecycle import OnDemandManager
+mgr = OnDemandManager(SubFactory(SubRegistry()))
+specs = [
+    SpawnSpec(role="research", capability=["research.web", "research.summary"], mode="always", port=8901),
+    SpawnSpec(role="coder",    capability=["code.write", "code.review"],        mode="always", port=8902),
+]
+for spec in specs:
+    res = mgr.ensure(spec)
+    print(f"  {res.sub_id}: {res.action} port={res.port} healthy={res.healthy}")
+PY
+
+echo "[3/4] nanobot WebUI (8765, 비밀번호 없음)..."
+mkdir -p "$WEBUI_DIR"
+cat > "$WEBUI_DIR/config.json" <<'JSON'
+{
+  "modelPresets": { "codex": { "provider": "openai_codex", "model": "openai-codex/gpt-5.5" } },
+  "agents": { "defaults": { "modelPreset": "codex" } },
+  "channels": { "websocket": { "enabled": true, "websocketRequiresToken": false } }
+}
+JSON
+nohup nanobot gateway --config "$WEBUI_DIR/config.json" --workspace "$WEBUI_DIR" \
+  > /tmp/nbq-webui-gw.log 2>&1 &
+wait_health "http://127.0.0.1:8765/" "webui 8765"
+
+echo "[4/4] 준비 완료."
+echo
+echo "  🌐 WebUI    : http://127.0.0.1:8765        (브라우저에서 열기 · 로그인 없음)"
+echo "  💬 CLI 대화 : QUEEN_GATEWAY_URL=http://127.0.0.1:8900 QUEEN_USER_KEY=user-key python -m nanobot.queen.cli"
+echo "  📋 Sub 목록 : python -m nanobot.queen.registry list"
+echo "  📊 지표     : python -m nanobot.queen.usage"
+echo
+echo "  ⚠️  주의: WebUI(8765)는 아직 순수 nanobot이라 여왕개미 라우팅·Sub·라벨이 적용되지 않습니다"
+echo "      (단일 에이전트가 Codex로 직접 응답). 여왕개미 대화는 위 CLI를 쓰세요."
+echo
+echo "  🛑 전체 종료: pkill -f 'nanobot.queen.gateway'; pkill -f 'nanobot gateway'; pkill -f 'nanobot serve'"
