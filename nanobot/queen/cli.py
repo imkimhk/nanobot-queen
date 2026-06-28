@@ -43,6 +43,74 @@ def _idea_manager():
     return IdeaStyleManager(RoleAdjuster(SubFactory(SubRegistry())))
 
 
+def _known_subs() -> list[str]:
+    return [r.id for r in SubRegistry().list()]
+
+
+def _handle_natural_admin(text: str) -> bool:
+    """Natural-language config/approval/rollback. Returns True if handled here.
+
+    The safety mechanism (IdeaStyleManager: filter → approval → apply, rollback)
+    is unchanged — only the entry is natural language. Nothing applies without
+    an explicit affirmative answer.
+    """
+    from pathlib import Path
+
+    from nanobot.queen.adjuster import AdjustmentError, ForbiddenPatternError
+    from nanobot.queen.admin_nl import detect_intent, is_affirmative, is_negative
+    from nanobot.queen.idea_style import IdeaStyleError
+
+    # 1) pending approval? interpret this turn as the answer.
+    plan = _PENDING.get("plan")
+    if plan is not None:
+        if is_affirmative(text):
+            _PENDING.pop("plan", None)
+            res = _idea_manager().apply(plan, approved=True)
+            print(f"  ✅ 적용됨: '{plan.sub_id}' status={res['status']} (기억 보존). "
+                  f"되돌리려면 '{plan.sub_id}를 이전으로 되돌려줘'.")
+            return True
+        if is_negative(text):
+            _PENDING.pop("plan", None)
+            print("  취소됨 (미적용).")
+            return True
+        # neither yes nor no -> drop the pending change, then process this text fresh
+        _PENDING.pop("plan", None)
+        print("  (승인 대기 취소 — 새 입력으로 처리합니다)")
+
+    # 2) detect an admin intent in this message
+    intent = detect_intent(text, _known_subs())
+
+    if intent.kind == "rollback":
+        try:
+            res = _idea_manager().rollback(intent.sub_id)
+            print(f"  ↩️ '{intent.sub_id}' 이전 설정으로 되돌렸습니다 ({res.get('rolled_back_to')}).")
+        except AdjustmentError as e:
+            print(f"  ❌ {e}")
+        return True
+
+    if intent.kind == "config":
+        instruction = intent.instruction
+        if intent.doc_path:
+            try:
+                instruction = Path(intent.doc_path).read_text(encoding="utf-8")
+                print(f"  📄 문서 사용: {intent.doc_path} ({len(instruction)}자, 동일 필터 적용)")
+            except OSError as e:
+                print(f"  ❌ 문서 읽기 실패: {e}")
+                return True
+        try:
+            plan = _idea_manager().draft(intent.sub_id, instruction)
+        except (IdeaStyleError, ForbiddenPatternError) as e:
+            print(f"  ❌ 거부(필터/불변 잠금): {e}")
+            return True
+        _PENDING["plan"] = plan
+        print(f"  📝 '{intent.sub_id}' Sub를 이렇게 설정하려 합니다 (작동 스타일만, 경계·툴·범위는 불변):")
+        print(f"     {plan.style_summary[:300]}")
+        print("  적용할까요? ('응'/'네'/'적용'=적용, '아니'/'취소'=취소)")
+        return True
+
+    return False
+
+
 def _handle_command(text: str) -> bool:
     """Handle a Queen admin slash-command locally. Returns True if it was one.
 
@@ -55,53 +123,10 @@ def _handle_command(text: str) -> bool:
     cmd = parts[0].lower()
 
     if cmd in ("/help", "/?"):
-        print("  명령: /spawn <role> [cap1,cap2]  ·  /subs  ·  /stop <role>")
-        print("        /style <idea_sub> <지침>  ·  /apply  ·  /cancel  ·  /rollback <sub>  ·  /help")
+        print("  명령: /spawn <role> [cap1,cap2]  ·  /subs  ·  /stop <role>  ·  /help")
+        print("  설정은 자연어로: 'idea가 디자인씽킹 방식으로 작동하게 해줘' → 승인('응'/'아니')")
+        print("                  되돌리기: 'idea를 이전으로 되돌려줘'")
         print(f"  생성 가능 role: {', '.join(sorted(ALLOWED_ROLES))}")
-        return True
-
-    if cmd == "/style":
-        if len(parts) < 3:
-            print("  사용법: /style <idea_sub> <작동방식 지침...>")
-            return True
-        sub_id = parts[1]
-        instruction = text.split(None, 2)[2]
-        from nanobot.queen.adjuster import ForbiddenPatternError
-        from nanobot.queen.idea_style import IdeaStyleError
-        try:
-            plan = _idea_manager().draft(sub_id, instruction)
-        except (IdeaStyleError, ForbiddenPatternError) as e:
-            print(f"  ❌ 거부(필터/불변 잠금): {e}")
-            return True
-        _PENDING["plan"] = plan
-        print(f"  📝 '{sub_id}' Sub를 이렇게 설정하려 합니다 (작동 스타일만 변경, 경계·툴·범위는 불변):")
-        print(f"     {plan.style_summary[:300]}")
-        print("  적용하려면 /apply , 취소하려면 /cancel")
-        return True
-
-    if cmd == "/apply":
-        plan = _PENDING.pop("plan", None)
-        if plan is None:
-            print("  (대기 중인 변경 없음 — 먼저 /style)")
-            return True
-        res = _idea_manager().apply(plan, approved=True)
-        print(f"  ✅ 적용됨: status={res['status']} (기억 보존). 롤백: /rollback {plan.sub_id}")
-        return True
-
-    if cmd == "/cancel":
-        print("  취소됨" if _PENDING.pop("plan", None) else "  (대기 중인 변경 없음)")
-        return True
-
-    if cmd == "/rollback":
-        if len(parts) < 2:
-            print("  사용법: /rollback <sub>")
-            return True
-        from nanobot.queen.adjuster import AdjustmentError
-        try:
-            res = _idea_manager().rollback(parts[1])
-            print(f"  ↩️ 롤백됨: {parts[1]} -> {res.get('rolled_back_to')}")
-        except AdjustmentError as e:
-            print(f"  ❌ {e}")
         return True
 
     if cmd == "/subs":
@@ -183,6 +208,8 @@ async def amain(messages: list[str]) -> None:
                 print(f"\n› {text}")
                 if _handle_command(text):
                     continue
+                if _handle_natural_admin(text):
+                    continue
                 await _one_turn(bus, text)
         else:
             print("Queen CLI — 메시지 입력('exit' 종료, '/help' 명령 도움말)")
@@ -198,6 +225,8 @@ async def amain(messages: list[str]) -> None:
                 if not text or text.lower() in {"exit", "quit"}:
                     break
                 if _handle_command(text):
+                    continue
+                if _handle_natural_admin(text):
                     continue
                 await _one_turn(bus, text)
     finally:
