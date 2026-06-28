@@ -21,9 +21,83 @@ import sys
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.queen.bridge import GatewayClient, QueenBridge
+from nanobot.queen.factory import (
+    ALLOWED_ROLES,
+    ROLE_DEFAULT_CAPABILITIES,
+    SpawnError,
+    SpawnSpec,
+    SubFactory,
+)
 from nanobot.queen.labels import PREV_RESPONDER_META_KEY, RESPONDER_META_KEY, render_cli
+from nanobot.queen.lifecycle import OnDemandManager
+from nanobot.queen.registry import STATUS_STOPPED, SubRegistry
 
 _CHAT_ID = "queen"
+
+
+def _handle_command(text: str) -> bool:
+    """Handle a Queen admin slash-command locally. Returns True if it was one.
+
+    Commands manage Subs directly via the factory/registry (same machine), so
+    they never go through /queen/chat. Creation stays allowlist-guarded.
+    """
+    if not text.startswith("/"):
+        return False
+    parts = text.split()
+    cmd = parts[0].lower()
+
+    if cmd in ("/help", "/?"):
+        print("  명령: /spawn <role> [cap1,cap2]  ·  /subs  ·  /stop <role>  ·  /help")
+        print(f"  생성 가능 role: {', '.join(sorted(ALLOWED_ROLES))}")
+        return True
+
+    if cmd == "/subs":
+        subs = SubRegistry().list()
+        if not subs:
+            print("  (등록된 Sub 없음)")
+        for r in subs:
+            print(f"  {r.id:10s} caps={r.capability} port={r.port} {r.status}")
+        return True
+
+    if cmd == "/spawn":
+        if len(parts) < 2:
+            print("  사용법: /spawn <role> [cap1,cap2]   (caps 생략 시 role 기본값)")
+            return True
+        role = parts[1]
+        caps = (parts[2].split(",") if len(parts) > 2
+                else ROLE_DEFAULT_CAPABILITIES.get(role, []))
+        try:
+            mgr = OnDemandManager(SubFactory(SubRegistry()))
+            res = mgr.ensure(SpawnSpec(role=role, capability=caps, mode="always"))
+            print(f"  ✅ {res.sub_id}: {res.action} port={res.port} "
+                  f"healthy={res.healthy} caps={caps}")
+        except SpawnError as e:
+            print(f"  ❌ 생성 거부(allowlist): {e}")
+        return True
+
+    if cmd == "/stop":
+        if len(parts) < 2:
+            print("  사용법: /stop <role>")
+            return True
+        role = parts[1]
+        reg = SubRegistry()
+        rec = reg.get(role)
+        if rec is None:
+            print(f"  (그런 Sub 없음: {role})")
+            return True
+        if rec.pid:
+            import os
+            import signal
+            try:
+                os.kill(rec.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        reg.set_status(role, STATUS_STOPPED)
+        print(f"  🛑 {role} 종료(워크스페이스·기억 보존)")
+        return True
+
+    print(f"  알 수 없는 명령: {cmd}  (/help)")
+    return True
 
 
 def _format_meta(meta: dict) -> str:
@@ -54,9 +128,11 @@ async def amain(messages: list[str]) -> None:
         if messages:
             for text in messages:
                 print(f"\n› {text}")
+                if _handle_command(text):
+                    continue
                 await _one_turn(bus, text)
         else:
-            print("Queen CLI — type a message ('exit' to quit)")
+            print("Queen CLI — 메시지 입력('exit' 종료, '/help' 명령 도움말)")
             loop = asyncio.get_event_loop()
             while True:
                 try:
@@ -68,6 +144,8 @@ async def amain(messages: list[str]) -> None:
                 text = text.strip()
                 if not text or text.lower() in {"exit", "quit"}:
                     break
+                if _handle_command(text):
+                    continue
                 await _one_turn(bus, text)
     finally:
         bridge.stop()

@@ -139,6 +139,38 @@ def test_star_tools_keeps_all_groups(tmp_path):
     assert "tools" not in cfg  # upstream default: all tools registered
 
 
+# --- idea role (blank thinking Sub, idea-domain-only) ----------------------
+
+
+def test_idea_role_allowed_and_toolless(tmp_path):
+    from nanobot.queen.factory import ROLE_DEFAULT_CAPABILITIES, toolset_for
+    assert "idea" in __import__("nanobot.queen.factory", fromlist=["ALLOWED_ROLES"]).ALLOWED_ROLES
+    caps = ROLE_DEFAULT_CAPABILITIES["idea"]
+    # idea capabilities grant NO tools beyond message -> no code exec / external
+    assert toolset_for(caps) == ["message"]
+
+
+def test_idea_template_has_no_external_work_boundary(tmp_path):
+    registry = SubRegistry(tmp_path / "subs.json")
+    f = SubFactory(registry, base_dir=tmp_path,
+                   keystore_path=tmp_path / ".nbq-core" / "keys.json",
+                   key_factory=lambda: "K", launcher=lambda **k: 1, health_check=lambda p: True)
+    from nanobot.queen.factory import ROLE_DEFAULT_CAPABILITIES
+    res = f.spawn(SpawnSpec(role="idea", capability=ROLE_DEFAULT_CAPABILITIES["idea"]))
+    ws = Path(res.workspace)
+    agents = (ws / "AGENTS.md").read_text()
+    # idea boundary: explicitly refuses producing artifacts (code/files) and
+    # routes them back via OUT_OF_SCOPE
+    assert "산출물" in agents and "OUT_OF_SCOPE" in agents
+    assert "코드" in agents
+    cfg = json.loads((ws / "config.json").read_text())
+    # every external tool group disabled -> idea Sub cannot do external work
+    t = cfg["tools"]
+    assert t["file"]["enable"] is False
+    assert t["exec"]["enable"] is False
+    assert t["web"]["enable"] is False
+
+
 # --- allowlist (safety) ----------------------------------------------------
 
 

@@ -50,6 +50,9 @@ CAPABILITY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "data.analyze": ("분석", "analyze", "통계"),
     "data.viz": ("그래프", "차트", "chart", "시각화"),
     "planning.decompose": ("계획", "분해", "plan"),
+    "idea.generate": ("아이디어", "idea", "브레인스토밍", "구상", "발상"),
+    "idea.structure": ("아이디어 정리", "구조화"),
+    "idea.evaluate": ("아이디어 평가", "장단점"),
 }
 
 

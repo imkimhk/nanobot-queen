@@ -55,13 +55,17 @@ from nanobot.queen.registry import (
 
 # --- allowlists (safety) ---------------------------------------------------
 
-ALLOWED_ROLES: set[str] = {"research", "coder", "writer", "analyst", "planner"}
+ALLOWED_ROLES: set[str] = {"research", "coder", "writer", "analyst", "planner", "idea"}
 ALLOWED_CAPABILITIES: set[str] = {
     "research.web", "research.summary",
     "code.write", "code.review",
     "writing.draft", "writing.edit",
     "data.analyze", "data.viz",
     "planning.decompose",
+    # "idea" — a blank thinking Sub whose behaviour is shaped later (STEP 2,
+    # via the adjuster). Its boundary stays inside the *idea* domain: no code
+    # execution, no file writes, no external calls — pure ideation.
+    "idea.generate", "idea.structure", "idea.evaluate",
 }
 ALLOWED_MODES: set[str] = {MODE_ALWAYS, MODE_ON_DEMAND}
 
@@ -89,9 +93,46 @@ CAPABILITY_TOOLSETS: dict[str, list[str]] = {
     "data.analyze": ["read_file", "exec", "grep"],
     "data.viz": ["read_file", "write_file", "exec"],
     "planning.decompose": ["read_file"],
+    # idea capabilities get NO tools beyond `message` — no file/exec/web — so a
+    # blank idea Sub literally cannot do code execution or external work; it can
+    # only think and reply in text. This enforces the "idea domain only" boundary.
+    "idea.generate": [],
+    "idea.structure": [],
+    "idea.evaluate": [],
 }
 # Tools every Sub keeps regardless of capability.
 BASE_TOOLS: list[str] = ["message"]
+
+# Default capabilities used when /spawn is given a role without explicit caps.
+ROLE_DEFAULT_CAPABILITIES: dict[str, list[str]] = {
+    "research": ["research.web", "research.summary"],
+    "coder": ["code.write", "code.review"],
+    "writer": ["writing.draft", "writing.edit"],
+    "analyst": ["data.analyze", "data.viz"],
+    "planner": ["planning.decompose"],
+    "idea": ["idea.generate", "idea.structure", "idea.evaluate"],
+}
+
+# Per-role default profile: a short description and an extra boundary line woven
+# into the rendered role prompt. Roles not listed use the generic template.
+ROLE_PROFILES: dict[str, dict[str, str]] = {
+    "idea": {
+        "summary": "아이디어 도출·구조화·평가 전문가",
+        "extra_boundary": (
+            "너는 **순수하게 아이디어 영역에서만** 일한다. 아이디어를 내고(도출), "
+            "정리하고(구조화), 따져본다(평가).\n"
+            "**중요: 너의 'generate(도출)'는 아이디어·개념·방향을 만드는 것이지, "
+            "산출물을 제작하는 게 아니다.** 다음은 (텍스트로라도) **절대 하지 마라** — "
+            "코드·함수·프로그램·스크립트 작성, 파일 작성, 문서/보고서 완성본 작성, 웹 조사, "
+            "수식·데이터 계산 대행, 시스템 명령. 이런 요청을 받으면 **코드나 산출물을 한 줄도 "
+            "출력하지 말고**, 정확히 `OUT_OF_SCOPE: ...` 형식으로만 Core에 돌려보낸다.\n"
+            "허용: '~할 아이디어/접근/방향 알려줘', '이 아이디어 장단점 평가', "
+            "'아이디어들 구조화/분류'. 금지: '~를 만들어줘/작성해줘/구현해줘'(산출물 제작).\n"
+            "(이 Sub의 구체적 작동 방식은 나중에 자연어/문서로 주입될 수 있으나, 이 "
+            "아이디어 영역 경계는 그래도 유지된다.)"
+        ),
+    },
+}
 
 
 def toolset_for(capabilities: list[str]) -> list[str]:
@@ -289,19 +330,23 @@ class SubFactory:
     def _render_agents_md(self, spec: SpawnSpec, sub_id: str) -> str:
         caps = ", ".join(f"`{c}`" for c in spec.capability)
         skills = ", ".join(spec.skills) if spec.skills else "(없음)"
+        profile = ROLE_PROFILES.get(spec.role, {})
+        summary = profile.get("summary", f"{spec.role} 전문")
+        extra_boundary = profile.get("extra_boundary", "")
+        extra_block = f"\n{extra_boundary}\n" if extra_boundary else ""
         return f"""# {spec.role} Sub — 역할 정의 (prompt_version: {spec.prompt_version})
 
-너는 **여왕개미(Queen) 아키텍처의 {spec.role} 전문 Sub** 다. 너는 범용 비서가 아니라,
+너는 **여왕개미(Queen) 아키텍처의 {summary} Sub** 다. 너는 범용 비서가 아니라,
 Core(여왕)로부터 위임받은 작업만 수행하는 전문 일개미다.
 
 ## 정체성
 - sub_id: `{sub_id}`
-- 역할: {spec.role}
+- 역할: {spec.role} ({summary})
 - 분야 스킬: {skills}
 
 ## Capability (네가 처리할 수 있는 범위)
 다음만 너의 범위(scope)다: {caps}
-
+{extra_block}
 ## Capability 경계 (매우 중요)
 **요청이 위 capability 밖이면, 절대 직접 답하지 마라.** 범위 밖 요청을 받으면 작업을 수행하지
 말고 **정확히 아래 한 줄 형식으로만** 응답해서 Core에 반환하라:
