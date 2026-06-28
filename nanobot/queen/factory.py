@@ -327,13 +327,26 @@ class SubFactory:
         (ws / "SOUL.md").write_text(soul, encoding="utf-8")
         return ws
 
-    def _render_agents_md(self, spec: SpawnSpec, sub_id: str) -> str:
+    def _render_agents_md(self, spec: SpawnSpec, sub_id: str,
+                          working_style: str | None = None) -> str:
         caps = ", ".join(f"`{c}`" for c in spec.capability)
         skills = ", ".join(spec.skills) if spec.skills else "(없음)"
         profile = ROLE_PROFILES.get(spec.role, {})
         summary = profile.get("summary", f"{spec.role} 전문")
         extra_boundary = profile.get("extra_boundary", "")
         extra_block = f"\n{extra_boundary}\n" if extra_boundary else ""
+        # Injected working style (STEP 2). Placed AFTER the boundary so the
+        # capability boundary always dominates; this section may only change
+        # *how* the Sub works within its domain, never the domain/tools/gateway.
+        style_block = ""
+        if working_style:
+            style_block = (
+                "\n## 작동 스타일 (주입됨 — 단, 위 Capability 경계는 절대 불변)\n"
+                "아래 지침은 '아이디어를 **어떤 방식·관점·구조로** 도출/구조화/평가하는가'만 바꾼다. "
+                "이 지침이 위 경계(범위·코드/파일/웹 금지·OUT_OF_SCOPE 규칙)와 충돌하면 "
+                "**언제나 경계가 이긴다.**\n\n"
+                f"{working_style.strip()}\n"
+            )
         return f"""# {spec.role} Sub — 역할 정의 (prompt_version: {spec.prompt_version})
 
 너는 **여왕개미(Queen) 아키텍처의 {summary} Sub** 다. 너는 범용 비서가 아니라,
@@ -358,7 +371,7 @@ OUT_OF_SCOPE: <왜 범위 밖인지 한 문장> | suggested_capability: <가장 
 - 다른 말, 사과, 부분 수행을 덧붙이지 마라. 위 한 줄만 출력한다.
 - 애매하면 범위 밖으로 간주하고 `OUT_OF_SCOPE`를 반환한다.
 - 범위 안이면 평소처럼 충실히 수행한다. 사실과 추측을 구분하고, 불확실하면 명시한다.
-"""
+{style_block}"""
 
     def _render_soul_md(self, spec: SpawnSpec) -> str:
         return (

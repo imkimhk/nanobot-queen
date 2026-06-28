@@ -33,6 +33,14 @@ from nanobot.queen.lifecycle import OnDemandManager
 from nanobot.queen.registry import STATUS_STOPPED, SubRegistry
 
 _CHAT_ID = "queen"
+# Pending idea-style plan awaiting /apply or /cancel (STEP 2 approval gate).
+_PENDING: dict[str, object] = {}
+
+
+def _idea_manager():
+    from nanobot.queen.adjuster import RoleAdjuster
+    from nanobot.queen.idea_style import IdeaStyleManager
+    return IdeaStyleManager(RoleAdjuster(SubFactory(SubRegistry())))
 
 
 def _handle_command(text: str) -> bool:
@@ -47,8 +55,53 @@ def _handle_command(text: str) -> bool:
     cmd = parts[0].lower()
 
     if cmd in ("/help", "/?"):
-        print("  명령: /spawn <role> [cap1,cap2]  ·  /subs  ·  /stop <role>  ·  /help")
+        print("  명령: /spawn <role> [cap1,cap2]  ·  /subs  ·  /stop <role>")
+        print("        /style <idea_sub> <지침>  ·  /apply  ·  /cancel  ·  /rollback <sub>  ·  /help")
         print(f"  생성 가능 role: {', '.join(sorted(ALLOWED_ROLES))}")
+        return True
+
+    if cmd == "/style":
+        if len(parts) < 3:
+            print("  사용법: /style <idea_sub> <작동방식 지침...>")
+            return True
+        sub_id = parts[1]
+        instruction = text.split(None, 2)[2]
+        from nanobot.queen.adjuster import ForbiddenPatternError
+        from nanobot.queen.idea_style import IdeaStyleError
+        try:
+            plan = _idea_manager().draft(sub_id, instruction)
+        except (IdeaStyleError, ForbiddenPatternError) as e:
+            print(f"  ❌ 거부(필터/불변 잠금): {e}")
+            return True
+        _PENDING["plan"] = plan
+        print(f"  📝 '{sub_id}' Sub를 이렇게 설정하려 합니다 (작동 스타일만 변경, 경계·툴·범위는 불변):")
+        print(f"     {plan.style_summary[:300]}")
+        print("  적용하려면 /apply , 취소하려면 /cancel")
+        return True
+
+    if cmd == "/apply":
+        plan = _PENDING.pop("plan", None)
+        if plan is None:
+            print("  (대기 중인 변경 없음 — 먼저 /style)")
+            return True
+        res = _idea_manager().apply(plan, approved=True)
+        print(f"  ✅ 적용됨: status={res['status']} (기억 보존). 롤백: /rollback {plan.sub_id}")
+        return True
+
+    if cmd == "/cancel":
+        print("  취소됨" if _PENDING.pop("plan", None) else "  (대기 중인 변경 없음)")
+        return True
+
+    if cmd == "/rollback":
+        if len(parts) < 2:
+            print("  사용법: /rollback <sub>")
+            return True
+        from nanobot.queen.adjuster import AdjustmentError
+        try:
+            res = _idea_manager().rollback(parts[1])
+            print(f"  ↩️ 롤백됨: {parts[1]} -> {res.get('rolled_back_to')}")
+        except AdjustmentError as e:
+            print(f"  ❌ {e}")
         return True
 
     if cmd == "/subs":
