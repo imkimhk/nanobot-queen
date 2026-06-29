@@ -6,6 +6,7 @@ from nanobot.queen.labels import (
     cli_prefix,
     render_cli,
     render_telegram,
+    render_telegram_md,
     responder_label,
     telegram_prefix,
     transition_note,
@@ -50,3 +51,12 @@ def test_render_cli_with_and_without_transition():
 def test_render_telegram_html():
     out = render_telegram(["coder"], "done", prev=["research"])
     assert out == "↪ <i>Research → Coder</i>\n<b>[Coder]</b> done"
+
+
+def test_render_telegram_md_markdown_label():
+    # nanobot Telegram channel converts markdown->HTML, so labels are markdown
+    assert render_telegram_md(["coder"], "hi") == "**[Coder]** hi"
+    out = render_telegram_md(["coder"], "done", prev=["research"])
+    assert out == "_↪ Research → Coder_\n**[Coder]** done"
+    # no transition on same responder
+    assert render_telegram_md(["idea"], "x", prev=["idea"]) == "**[Idea]** x"

@@ -75,10 +75,28 @@ def render_cli(responder: list[str] | str | None, content: str,
 
 def render_telegram(responder: list[str] | str | None, content: str,
                     *, prev: list[str] | str | None = None) -> str:
-    """Full Telegram render: optional transition note + HTML label + content."""
+    """Full Telegram render: optional transition note + HTML label + content.
+
+    Use when sending with parse_mode=HTML directly.
+    """
     parts = []
     note = transition_note(prev, responder, style="telegram")
     if note:
         parts.append(note)
     parts.append(f"{telegram_prefix(responder)} {content}")
+    return "\n".join(parts)
+
+
+def render_telegram_md(responder: list[str] | str | None, content: str,
+                       *, prev: list[str] | str | None = None) -> str:
+    """Markdown label for the nanobot Telegram channel.
+
+    The channel converts markdown -> Telegram HTML, so the label must be
+    **markdown** (``**[Coder]**``), not raw HTML (which would be escaped).
+    """
+    parts = []
+    pl, cl = responder_label(prev), responder_label(responder)
+    if prev is not None and pl != cl:
+        parts.append(f"_↪ {pl} → {cl}_")          # italic transition note
+    parts.append(f"**[{cl}]** {content}")           # bold responder prefix
     return "\n".join(parts)
