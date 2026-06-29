@@ -112,3 +112,8 @@ subs.json
 promoted.jsonl
 *.keystore
 sessions/
+
+# Queen secrets (bot tokens etc.) — keep out of the repo as defense-in-depth.
+telegram.json
+*.token
+**/telegram.json
