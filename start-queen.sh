@@ -39,8 +39,7 @@ pkill -f "nanobot.queen.gateway" 2>/dev/null || true
 pkill -f "nanobot gateway"       2>/dev/null || true
 pkill -f "nanobot serve"         2>/dev/null || true
 sleep 1
-# 레지스트리/키 초기화 (워크스페이스·기억은 보존; Sub는 아래서 새로 띄움)
-rm -f "$HOME/.nbq-core/subs.json" "$HOME/.nbq-core/keys.json"
+# NOTE: 레지스트리/키는 보존한다 — 생성·설정한 Sub가 재기동 때 그대로 복원되도록.
 
 echo "[1/4] 여왕개미 게이트웨이 (8900)..."
 QUEEN_GATEWAY_HOST="127.0.0.1" \
@@ -53,19 +52,24 @@ QUEEN_GATEWAY_MAX_CONCURRENCY="8" \
   nohup python -m nanobot.queen.gateway > /tmp/nbq-gw.log 2>&1 &
 wait_health "http://127.0.0.1:8900/health" "gateway 8900"
 
-echo "[2/4] 전문 Sub 기동 (research 8901, coder 8902)..."
+echo "[2/4] 등록된 Sub 복원 (설정·기억 보존, 최근 5개까지)..."
 python - <<'PY'
 from nanobot.queen.registry import SubRegistry
 from nanobot.queen.factory import SubFactory, SpawnSpec
-from nanobot.queen.lifecycle import OnDemandManager
-mgr = OnDemandManager(SubFactory(SubRegistry()))
-specs = [
-    SpawnSpec(role="research", capability=["research.web", "research.summary"], mode="always", port=8901),
-    SpawnSpec(role="coder",    capability=["code.write", "code.review"],        mode="always", port=8902),
-]
-for spec in specs:
-    res = mgr.ensure(spec)
-    print(f"  {res.sub_id}: {res.action} port={res.port} healthy={res.healthy}")
+from nanobot.queen.fleet import FleetManager
+reg = SubRegistry()
+fleet = FleetManager(SubFactory(reg))
+if not reg.list():
+    # 첫 실행 등 레지스트리가 비었을 때만 기본 Sub 시드
+    for spec in [
+        SpawnSpec(role="research", capability=["research.web", "research.summary"], mode="always", port=8901),
+        SpawnSpec(role="coder",    capability=["code.write", "code.review"],        mode="always", port=8902),
+    ]:
+        r = fleet.spawn(spec)
+        print(f"  seed {r['sub_id']}: {r['action']} port={r['port']} healthy={r['healthy']}")
+else:
+    for sub_id, how in fleet.restore_all():
+        print(f"  {sub_id}: {how}")
 PY
 
 echo "[3/4] nanobot WebUI (8765, 비밀번호 없음)..."

@@ -29,7 +29,6 @@ from nanobot.queen.factory import (
     SubFactory,
 )
 from nanobot.queen.labels import PREV_RESPONDER_META_KEY, RESPONDER_META_KEY, render_cli
-from nanobot.queen.lifecycle import OnDemandManager
 from nanobot.queen.registry import STATUS_STOPPED, SubRegistry
 
 _CHAT_ID = "queen"
@@ -144,11 +143,15 @@ def _handle_command(text: str) -> bool:
         role = parts[1]
         caps = (parts[2].split(",") if len(parts) > 2
                 else ROLE_DEFAULT_CAPABILITIES.get(role, []))
+        from nanobot.queen.fleet import FleetManager
         try:
-            mgr = OnDemandManager(SubFactory(SubRegistry()))
-            res = mgr.ensure(SpawnSpec(role=role, capability=caps, mode="always"))
-            print(f"  ✅ {res.sub_id}: {res.action} port={res.port} "
-                  f"healthy={res.healthy} caps={caps}")
+            res = FleetManager(SubFactory(SubRegistry())).spawn(
+                SpawnSpec(role=role, capability=caps, mode="always"))
+            msg = (f"  ✅ {res['sub_id']}: {res['action']} port={res['port']} "
+                   f"healthy={res['healthy']}")
+            if res.get("evicted"):
+                msg += f"  (LRU 종료: {res['evicted']})"
+            print(msg)
         except SpawnError as e:
             print(f"  ❌ 생성 거부(allowlist): {e}")
         return True
