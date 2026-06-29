@@ -87,11 +87,14 @@ async def amain() -> None:
     bridge = QueenBridge(bus, GatewayClient(base_url, user_key))
     stop = asyncio.Event()
 
-    await channel.start()
-    print(f"🐝 Queen Telegram runner — bot polling. Gateway={base_url}, "
-          f"allow_from={allow_from or '(open)'}. Ctrl+C to stop.")
+    # NOTE: channel.start() blocks (it ends with a `while self._running: sleep`
+    # loop), so it must run as a background task — otherwise the bridge/pump
+    # tasks below would never be created and inbound would never be consumed.
+    start_task = asyncio.create_task(channel.start())
     bridge_task = asyncio.create_task(bridge.run())
     pump_task = asyncio.create_task(_pump_outbound(bus, channel, stop))
+    print(f"🐝 Queen Telegram runner — bot polling. Gateway={base_url}, "
+          f"allow_from={allow_from or '(open)'}. Ctrl+C to stop.", flush=True)
 
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -105,8 +108,9 @@ async def amain() -> None:
         bridge.stop()
         bridge_task.cancel()
         pump_task.cancel()
-        await channel.stop()
-        print("\nstopped.")
+        await channel.stop()      # sets _running=False -> start() loop exits
+        start_task.cancel()
+        print("\nstopped.", flush=True)
 
 
 def main() -> None:
