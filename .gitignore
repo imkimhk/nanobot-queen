@@ -117,3 +117,4 @@ sessions/
 telegram.json
 *.token
 **/telegram.json
+.claude/
