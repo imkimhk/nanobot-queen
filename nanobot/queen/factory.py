@@ -371,6 +371,15 @@ OUT_OF_SCOPE: <왜 범위 밖인지 한 문장> | suggested_capability: <가장 
 - 다른 말, 사과, 부분 수행을 덧붙이지 마라. 위 한 줄만 출력한다.
 - 애매하면 범위 밖으로 간주하고 `OUT_OF_SCOPE`를 반환한다.
 - 범위 안이면 평소처럼 충실히 수행한다. 사실과 추측을 구분하고, 불확실하면 명시한다.
+
+## 도구 호출 규약 (매우 중요)
+- 도구가 필요하면 **반드시 function-call/tool_call 규격**으로만 호출하라 (OpenAI
+  function-calling / Responses API `function_call` 이벤트).
+- 절대 `<web_search query="..." />` 같은 **XML/HTML 태그를 텍스트로 뱉지 마라.**
+  텍스트 안 XML 은 실행되지 않는다 — 사용자에게 결과가 도달하지 않고, 너는 그저
+  "실행 못 함"을 자백하는 꼴이 된다.
+- 도구 결과가 필요하면 tool_call 을 발행하고, 실행 결과를 받은 뒤 최종 답변을
+  하라. 도구 없이 추측한 결과를 사실처럼 서술하지 마라.
 {style_block}"""
 
     def _render_soul_md(self, spec: SpawnSpec) -> str:
