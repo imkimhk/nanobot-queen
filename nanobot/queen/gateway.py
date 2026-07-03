@@ -452,6 +452,31 @@ def make_codex_integrator(provider, model: str):
     return _integrate
 
 
+def _build_core_system_message(registry) -> str:
+    """Return the Core-direct system prompt with a live snapshot of running Subs.
+
+    Rebuilt on every call so newly-spawned or removed Subs are reflected in the
+    next turn without any caching. Registry is queried fresh (no memoisation),
+    which matches the invariant "매 호출 registry 재조회" from the spec.
+    """
+    from nanobot.queen.registry import STATUS_RUNNING  # local import: avoid cycles
+
+    running = [r for r in registry.list() if r.status == STATUS_RUNNING]
+    if running:
+        subs_line = ", ".join(
+            f"{r.id}({', '.join(r.capability)})" if r.capability else r.id
+            for r in running
+        )
+    else:
+        subs_line = "(없음)"
+    return (
+        "너는 여왕개미(Queen) nanobot 오케스트레이터의 Core다. "
+        "사용자 요청을 직접 답하거나, 전문 분야는 Sub에게 위임한다.\n"
+        f"현재 사용 가능한 Sub: {subs_line}\n"
+        "사용자가 Sub 목록/역할을 물으면 위 정보를 바탕으로 정확히 답하라."
+    )
+
+
 def make_codex_answerer(provider, model: str):
     async def _answer(text: str):
         r = await provider.chat(messages=[{"role": "user", "content": text}], model=model)
@@ -481,14 +506,68 @@ async def handle_queen_chat(request: web.Request) -> web.Response:
     registry = SubRegistry(request.app["registry_path"])
     forwarder = SubForwarder(registry, model=request.app["model"])
 
+    # Optional web-search augment for research-capable Subs: two Codex calls
+    # (intent probe + final answer via the Sub itself) plus one deterministic
+    # Python-side DuckDuckGo search. Only Subs whose ``capability`` includes
+    # ``research.web`` are ever augmented; every other Sub sees ``msg`` as-is.
+    from nanobot.queen.web_augment import maybe_augment_with_web_search
+
     async def sub_call(sub_id: str, task_id: str, msg: str):
-        return await forwarder.forward(sub_id, msg, session_id=session_id, task_id=task_id)
+        rec = registry.get(sub_id)
+        caps = rec.capability if rec is not None else []
+        augmented, telemetry = await maybe_augment_with_web_search(
+            msg, caps, request.app["provider"], request.app["model"],
+        )
+        result = await forwarder.forward(sub_id, augmented, session_id=session_id, task_id=task_id)
+        # γ: surface augment telemetry so the caller (and gateway log) can see
+        # whether the probe ran, what it decided, and whether search succeeded.
+        # SubResult.usage's static type is dict[str,int] but at runtime it is
+        # a plain dict and the aggregator (_agg_usage in chat.py) only reads
+        # the three token keys — a nested "web_augment" entry is inert there.
+        if telemetry and telemetry.get("eligible"):
+            if result.usage is None:
+                result.usage = {}
+            result.usage["web_augment"] = telemetry
+            logger.info(
+                "web_augment sub_id={} probe={} query={!r} search_ran={} search_ok={} probe_tokens={}",
+                sub_id, telemetry.get("probe_kind"), telemetry.get("query"),
+                telemetry.get("search_ran"), telemetry.get("search_ok"),
+                (telemetry.get("probe_usage") or {}).get("total_tokens", 0),
+            )
+        return result
+
+    # Core-direct answers get session-scoped history so a user talking to Core
+    # directly can rely on earlier turns of the same session_id. The classifier
+    # and integrator calls (make_codex_classifier/make_codex_integrator) are
+    # intentionally NOT wrapped — they must remain stateless single-shot calls.
+    state = request.app.get("session_state")
+    core_answer = request.app["core_answer"]
+    if state is not None and session_id:
+        provider = request.app["provider"]
+        model_name: str = request.app["model"]
+
+        async def core_answer_session(user_text: str):
+            history = state.get_core_history(session_id)
+            # System prompt is rebuilt every call from the live registry so a
+            # Sub spawned/killed mid-session shows up on the very next turn.
+            system_msg = _build_core_system_message(registry)
+            messages = ([{"role": "system", "content": system_msg}]
+                        + history + [{"role": "user", "content": user_text}])
+            r = await provider.chat(messages=messages, model=model_name)
+            content = r.content or ""
+            state.append_core_history(session_id, "user", user_text)
+            state.append_core_history(session_id, "assistant", content)
+            return content, (r.usage or {})
+
+        core_answer = core_answer_session
 
     chat = QueenChat(
         registry, sub_call,
         classify=request.app["classify"],
         integrate=request.app["integrate"],
-        core_answer=request.app["core_answer"],
+        core_answer=core_answer,
+        session_state=state,
+        session_id=session_id,
     )
     res = await chat.handle(text)
 
@@ -565,6 +644,11 @@ def create_app(
     app["classify"] = make_codex_classifier(prov, model)
     app["integrate"] = make_codex_integrator(prov, model)
     app["core_answer"] = make_codex_answerer(prov, model)
+    # Per-session router state: sticky Sub + Core-direct chat history. Kept
+    # in-process for the lifetime of the gateway (single-node deployment).
+    # ``handle_queen_chat`` reads/writes this when a ``session_id`` is present.
+    from nanobot.queen.session_state import SessionRouterStore
+    app["session_state"] = SessionRouterStore()
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/health", handle_health)
