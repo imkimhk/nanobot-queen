@@ -100,3 +100,21 @@ temp/
 exp/
 .playwright-mcp/
 bridge/node_modules/
+
+# Queen runtime artifacts (Sub workspaces, gateway keystore/usage, sessions).
+# These live under $HOME by default; ignored here as defense-in-depth in case a
+# runtime path is ever pointed inside the repo. They are never sources.
+.nbq-*/
+**/.nbq-*/
+usage.jsonl
+keys.json
+subs.json
+promoted.jsonl
+*.keystore
+sessions/
+
+# Queen secrets (bot tokens etc.) — keep out of the repo as defense-in-depth.
+telegram.json
+*.token
+**/telegram.json
+.claude/

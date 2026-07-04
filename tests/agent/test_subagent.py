@@ -110,3 +110,34 @@ async def test_subagent_forwards_fail_on_tool_error_to_runner(tmp_path):
 
     spec = sm.runner.run.call_args.args[0]
     assert spec.fail_on_tool_error is False
+
+
+@pytest.mark.asyncio
+async def test_subagent_inherits_disabled_tool_groups():
+    """A subagent must not regain tool groups the parent disabled.
+
+    Regression for the cli_apps inheritance gap: _subagent_tools_config only
+    copied exec/web/file, so a parent with cli_apps disabled spawned a subagent
+    that got run_cli_app back via ToolsConfig defaults.
+    """
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test"
+
+    # parent with cli_apps disabled (like a Queen idea Sub)
+    restricted = ToolsConfig.model_validate({"cliApps": {"enable": False}})
+    sm = SubagentManager(
+        provider=provider, workspace=Path("/tmp"), bus=MessageBus(),
+        model="test", max_tool_result_chars=16_000, tools_config=restricted,
+    )
+    sub_cfg = sm._subagent_tools_config()
+    assert sub_cfg.cli_apps.enable is False          # inherited, not reset to default
+    assert not sm._build_tools().has("run_cli_app")  # tool group not regained
+
+    # parent with cli_apps enabled still passes it through (no regression)
+    allowed = ToolsConfig.model_validate({"cliApps": {"enable": True}})
+    sm2 = SubagentManager(
+        provider=provider, workspace=Path("/tmp"), bus=MessageBus(),
+        model="test", max_tool_result_chars=16_000, tools_config=allowed,
+    )
+    assert sm2._subagent_tools_config().cli_apps.enable is True
+    assert sm2._build_tools().has("run_cli_app")
